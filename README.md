@@ -1,5 +1,4 @@
-FILE 2: README.md
-================================================================================
+
 # OpenEZIP: SiFli Reversing Tool & Decoder 🛠️ (ALPHA)
 
 An open-source research initiative and Python GUI tool aimed at reverse-engineering the SiFli EZIP `.bin` image format used in various smartwatches and embedded displays. 
