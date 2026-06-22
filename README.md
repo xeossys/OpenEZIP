@@ -3,7 +3,7 @@
 
 An open-source research initiative and Python GUI tool aimed at reverse-engineering the SiFli EZIP `.bin` image format used in various smartwatches and embedded displays. 
 
-**Target Hardware:** This tool was initiated for the **HK8 Pro Max 2nd Gen** smartwatch, but it is designed to work with the same lineup of smartwatches utilizing **SiFli chipsets**.
+**Target Hardware:** This tool was initiated for the **HK8 Pro Max** smartwatch, but it is designed to work with the same lineup of smartwatches utilizing **SiFli chipsets**.
 
 **⚠️ PROJECT STATUS: ALPHA / WORK-IN-PROGRESS** Currently, this tool can successfully parse EZIP block structures and decompress the hidden PNG data, but **the color rendering is off (images appear reddish/purplish)**. 
 
