@@ -1,6 +1,10 @@
-# SiFli EZIP Reversing Tool & Decoder 🛠️ (ALPHA)
+FILE 2: README.md
+================================================================================
+# OpenEZIP: SiFli Reversing Tool & Decoder 🛠️ (ALPHA)
 
-An open-source research initiative and Python GUI tool aimed at reverse-engineering the SiFli EZIP `.bin` image format used in various smartwatches and embedded displays.
+An open-source research initiative and Python GUI tool aimed at reverse-engineering the SiFli EZIP `.bin` image format used in various smartwatches and embedded displays. 
+
+**Target Hardware:** This tool was initiated for the **HK8 Pro Max 2nd Gen** smartwatch, but it is designed to work with the same lineup of smartwatches utilizing **SiFli chipsets**.
 
 **⚠️ PROJECT STATUS: ALPHA / WORK-IN-PROGRESS** Currently, this tool can successfully parse EZIP block structures and decompress the hidden PNG data, but **the color rendering is off (images appear reddish/purplish)**. 
 
@@ -9,7 +13,7 @@ This repository is being released to the community so developers can collaborate
 ## 🎯 The End Goal / Roadmap
 
 1. **[WIP] Perfect the Decoder:** Fix the RGB/BGR byte-swapping and RGB565 rendering issues so extracted `.png` files have 100% accurate colors.
-2. **[TODO] Re-Encoder/Compiler:** Build out the compression logic to turn standard `.png` files *back* into SiFli EZIP `.bin` files with the correct LVGL/EZIP headers.
+2. **[TODO] Re-Encoder/Compiler:** Build out the compression logic to turn standard `.png` files *back* into SiFli EZIP `.bin` files with the correct LVGL/EZIP headers so watch accepts the file.
 3. **[TODO] Hardware Flashing:** Successfully flash modded UI elements and custom watch faces back onto the smartwatch.
 
 ## 🐛 Known Issues (Help Wanted!)
@@ -23,6 +27,7 @@ This repository is being released to the community so developers can collaborate
 * **Header Parsing:** Successfully reads the custom SiFli LVGL (4-byte) and EZIP (16-byte) headers.
 * **Block Extraction:** Maps the block offset table and dynamically extracts chunked streams.
 * **Deflate/Huffman Decoding:** Handles both "Modded Stream" (standard zlib deflate) and "Factory Stream" (Custom Shared Huffman Tree) extraction.
+* **Color Space Debugger:** Dropdown selection tool to force-override the byte decoding pattern during analysis.
 
 ## 🛠️ Requirements & Setup
 
@@ -31,7 +36,17 @@ This repository is being released to the community so developers can collaborate
 * `Pillow` (For image handling)
 
 ```bash
-git clone [https://github.com/yourusername/sifli-ezip-reversing.git](https://github.com/yourusername/sifli-ezip-reversing.git)
-cd sifli-ezip-reversing
+git clone [https://github.com/xeossys/OpenEZIP.git](https://github.com/xeossys/OpenEZIP.git)
+cd OpenEZIP
 pip install -r requirements.txt
 python main.py
+```
+## How to Use for Reverse Engineering
+Launch the application and click "Load & Extract .bin File".
+Choose your target smartwatch asset .bin file.
+Observe the extracted specifications in the EZIP Hardware Specs panel (check block counts, flags, and if it uses shared Huffman strings).
+If the colors on the preview look broken (red/purple), select a different raw decoder target layout from the 🧪 Color Space Debugger dropdown panel.
+Reload the file. Keep testing combinations until the colors align perfectly!
+
+🤝 Contributing
+We actively need your help! If you have experience reverse-engineering firmware, working with embedded displays, dealing with packed pixel arrays (RGB565/BGR), or parsing custom zlib/deflate structures, please get involved! 
