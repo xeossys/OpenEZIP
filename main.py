@@ -286,7 +286,8 @@ class DecoderThread(QThread):
 class BinToPngApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SiFli EZIP Reversing Tool (Alpha)")
+        # ---> CHANGED WINDOW TITLE HERE <---
+        self.setWindowTitle("OpenEZIP: SiFli Reversing Tool (Alpha)")
         self.setFixedSize(950, 680)
         self.current_bin_path = None
         self.meta = None
