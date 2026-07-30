@@ -12,7 +12,7 @@ This repository is being released to the community so developers can collaborate
 ## 🎯 The End Goal / Roadmap
 
 1. **[WIP] Perfect the Decoder:** Fix the RGB/BGR byte-swapping and RGB565 rendering issues so extracted `.png` files have 100% accurate colors.
-2. **[TODO] Re-Encoder/Compiler:** Build out the compression logic to turn standard `.png` files *back* into SiFli EZIP `.bin` files with the correct LVGL/EZIP headers so watch accepts the file.
+2. **[WIP] Re-Encoder/Compiler:** `ezip_encoder.py` now provides a verified bridge to a user-supplied official SiFli encoder. A fully open reimplementation of SiFli compression remains TODO.
 3. **[TODO] Hardware Flashing:** Successfully flash modded UI elements and custom watch faces back onto the smartwatch.
 
 ## 🐛 Known Issues (Help Wanted!)
@@ -27,6 +27,46 @@ This repository is being released to the community so developers can collaborate
 * **Block Extraction:** Maps the block offset table and dynamically extracts chunked streams.
 * **Deflate/Huffman Decoding:** Handles both "Modded Stream" (standard zlib deflate) and "Factory Stream" (Custom Shared Huffman Tree) extraction.
 * **Color Space Debugger:** Dropdown selection tool to force-override the byte decoding pattern during analysis.
+
+## ✅ Official encoder bridge (verified)
+
+OpenEZIP does **not** redistribute SiFli's encoder or its runtime DLLs. Instead,
+`ezip_encoder.py` invokes a copy of `eZIP.exe` that the user obtained from the
+official SiFli GraphicsTool, then validates the generated SiFli header and PNG
+dimensions. This is the tested path for producing eZip assets accepted by an
+HK8 PRO MAX equipment-6167 watchface package.
+
+Windows:
+
+```bash
+python ezip_encoder.py face.png --encoder "C:\\SiFli\\video_tool\\eZIP.exe" --outdir build --format rgb565a
+```
+
+Linux with Wine:
+
+```bash
+python ezip_encoder.py face.png \
+  --encoder /opt/sifli/video_tool/eZIP.exe \
+  --outdir build \
+  --format rgb565a \
+  --wine
+```
+
+The output is `build/face.bin`. The script checks the four-byte SiFli header
+and fails if its width or height differs from the source PNG. `rgb565a` is the
+verified setting for alpha-capable eZip backgrounds; `rgb565` and `rgb888` are
+also exposed for investigation.
+
+This creates an image resource only. A complete store watchface still requires
+the matching stock package structure, resource paths and native watchface
+module for the target firmware. Do not assume a valid `.bin` is portable
+between HK8 revisions or SiFli watches.
+
+Run the bridge tests with:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## 🛠️ Requirements & Setup
 
