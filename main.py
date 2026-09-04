@@ -8,9 +8,13 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from ezip_decoder import (
     automatic_pixel_layout,
+    decompress_standard_ezip,
+    EzipDecodingError,
     infer_bytes_per_pixel,
+    NotStandardEzipStreamError,
     pixels_to_image,
     unfilter_png_blocks,
+    validate_stream_bit_depth,
 )
 from sifli_header import parse_sifli_header
 
@@ -168,14 +172,60 @@ class DecoderThread(QThread):
             width = resource_header.width
             height = resource_header.height
 
-            comp_data = data[20:]
-            row_size = struct.unpack(">H", comp_data[0:2])[0]
-            num_blocks = struct.unpack(">H", comp_data[2:4])[0]
-            
-            ctrl = data[8]
-            filterless_flag = data[4 + 12] & 0x0F
-            has_filters = (filterless_flag != 1)
-            one_huffcode = ((ctrl >> 4) > 2) and ((ctrl >> 4) != 5)
+            stream_data = data[4:]
+            try:
+                stream_header, lz77_filtered = decompress_standard_ezip(stream_data)
+                if (stream_header.width, stream_header.height) != (width, height):
+                    raise EzipDecodingError(
+                        "Resource dimensions do not match the eZIP stream header"
+                    )
+
+                ctrl = stream_header.control
+                row_size = stream_header.block_rows
+                has_filters = stream_header.has_filters
+                num_blocks = (height + row_size - 1) // row_size
+                one_huffcode = False
+                stream_kind = "Standard raw-DEFLATE"
+                strict_stream = True
+            except NotStandardEzipStreamError as standard_error:
+                self.log_signal.emit(
+                    f"Standard stream unavailable ({standard_error}); trying legacy layout..."
+                )
+                ctrl = data[8]
+                filterless_flag = data[16] & 0x0F
+                has_filters = filterless_flag != 1
+                comp_data = data[20:]
+                legacy_row_size = struct.unpack(">H", comp_data[0:2])[0]
+                row_size = legacy_row_size
+                num_blocks = struct.unpack(">H", comp_data[2:4])[0]
+                one_huffcode = ((ctrl >> 4) > 2) and ((ctrl >> 4) != 5)
+
+                table_size = 4 * (num_blocks + 1)
+                raw_stream = comp_data[table_size:]
+
+                if one_huffcode:
+                    stream_kind = "Legacy shared Huffman"
+                    lz77_filtered = decode_sifli_ezip(raw_stream, legacy_row_size)
+                else:
+                    stream_kind = "Legacy block-DEFLATE"
+                    offsets = []
+                    for i in range(num_blocks):
+                        off = struct.unpack(
+                            ">I", comp_data[4 + i*4 : 8 + i*4]
+                        )[0]
+                        if i == 0:
+                            off &= 0x00FFFFFF
+                        offsets.append(off)
+                    offsets.append(len(raw_stream) + table_size + 16)
+
+                    lz77_filtered = bytearray()
+                    for i in range(num_blocks):
+                        start = offsets[i] - 16 - table_size
+                        end = offsets[i+1] - 16 - table_size
+                        lz77_filtered.extend(
+                            zlib.decompress(raw_stream[start:end], -15)
+                        )
+                strict_stream = False
 
             meta = {
                 'w': width, 'h': height, 'row_size': row_size, 
@@ -184,35 +234,30 @@ class DecoderThread(QThread):
                 'color_format': color_format, 'file_size': len(data)
             }
 
-            self.log_signal.emit(f"[EZIP] Block Rows: {row_size}, Blocks: {num_blocks}")
-            
-            table_size = 4 * (num_blocks + 1)
-            raw_stream = comp_data[table_size:]
-
-            if one_huffcode:
-                self.log_signal.emit("Decompressing Factory Stream (Shared Huffman)...")
-                lz77_filtered = decode_sifli_ezip(raw_stream, row_size)
-            else:
-                self.log_signal.emit("Decompressing Modded Stream (Standard Blocks)...")
-                offsets = []
-                for i in range(num_blocks):
-                    off = struct.unpack(">I", comp_data[4 + i*4 : 8 + i*4])[0]
-                    if i == 0: off &= 0x00FFFFFF
-                    offsets.append(off)
-                offsets.append(len(raw_stream) + table_size + 16)
-                
-                lz77_filtered = bytearray()
-                for i in range(num_blocks):
-                    start = offsets[i] - 16 - table_size
-                    end = offsets[i+1] - 16 - table_size
-                    lz77_filtered.extend(zlib.decompress(raw_stream[start:end], -15))
+            self.log_signal.emit(
+                f"[EZIP] Stream: {stream_kind}, Block Rows: {row_size}, Blocks: {num_blocks}"
+            )
 
             bpp = infer_bytes_per_pixel(
-                len(lz77_filtered), width, height, has_filters
+                len(lz77_filtered),
+                width,
+                height,
+                has_filters,
+                strict=strict_stream,
             )
+            if strict_stream:
+                validate_stream_bit_depth(stream_header, bpp)
             meta['bpp'] = bpp
             
-            raw_pixels = unfilter_png_blocks(lz77_filtered, width, height, bpp, row_size, has_filters)
+            raw_pixels = unfilter_png_blocks(
+                lz77_filtered,
+                width,
+                height,
+                bpp,
+                row_size,
+                has_filters,
+                strict=strict_stream,
+            )
 
             # COLOR SPACE DEBUGGER LOGIC
             if self.color_override == "Auto (Default)":

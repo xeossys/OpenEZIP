@@ -1,4 +1,6 @@
+import struct
 import unittest
+import zlib
 
 from ezip_decoder import (
     ARGB8888_LE,
@@ -8,10 +10,14 @@ from ezip_decoder import (
     RGB565_LE,
     RGB888_LE,
     EzipDecodingError,
+    NotStandardEzipStreamError,
     automatic_pixel_layout,
+    decompress_standard_ezip,
     infer_bytes_per_pixel,
+    parse_ezip_stream_header,
     pixels_to_image,
     unfilter_png_blocks,
+    validate_stream_bit_depth,
 )
 
 
@@ -119,6 +125,69 @@ class EzipFilterDecoderTest(unittest.TestCase):
             bytes([1, 2, 3]), 2, 1, 1, 1, False, strict=False
         )
         self.assertEqual(bytes([1, 2]), decoded)
+
+
+class EzipStreamDecoderTest(unittest.TestCase):
+    @staticmethod
+    def make_stream(output, width=2, height=1, block_rows=32, filter_mode=0):
+        compressor = zlib.compressobj(level=9, wbits=-15)
+        compressed = compressor.compress(output) + compressor.flush()
+        data_size = 16 + len(compressed) + 4
+        header = struct.pack(
+            ">IBBBBHHBBBB",
+            data_size,
+            0x1C,
+            24,
+            block_rows,
+            0,
+            width,
+            height,
+            filter_mode,
+            0,
+            0,
+            0,
+        )
+        checksum = struct.pack(">I", zlib.adler32(output) & 0xFFFFFFFF)
+        return header + compressed + checksum
+
+    def test_parses_official_stream_header_layout(self):
+        header = parse_ezip_stream_header(
+            bytes.fromhex("00 00 0b a4 1c 18 20 00 00 44 00 25 00 00 00 00")
+            + bytes(2964)
+        )
+        self.assertEqual(2980, header.data_size)
+        self.assertEqual(24, header.bit_depth)
+        self.assertEqual(32, header.block_rows)
+        self.assertEqual((68, 37), (header.width, header.height))
+        self.assertTrue(header.has_filters)
+
+    def test_decompresses_standard_stream_and_verifies_checksum(self):
+        expected = bytes([0, 0, 0, 255, 0, 248])
+        header, output = decompress_standard_ezip(self.make_stream(expected))
+        self.assertEqual((2, 1), (header.width, header.height))
+        self.assertEqual(expected, output)
+
+    def test_malformed_header_is_available_to_legacy_fallback(self):
+        with self.assertRaises(NotStandardEzipStreamError):
+            decompress_standard_ezip(bytes(16))
+
+    def test_validates_stream_bit_depth(self):
+        header, _ = decompress_standard_ezip(self.make_stream(b"pixels"))
+        validate_stream_bit_depth(header, 3)
+        with self.assertRaisesRegex(EzipDecodingError, "bit depth"):
+            validate_stream_bit_depth(header, 2)
+
+    def test_rejects_bad_standard_stream_checksum(self):
+        stream = bytearray(self.make_stream(b"decoded pixels"))
+        stream[-1] ^= 0xFF
+        with self.assertRaisesRegex(EzipDecodingError, "checksum mismatch"):
+            decompress_standard_ezip(stream)
+
+    def test_identifies_non_standard_compression(self):
+        stream = bytearray(self.make_stream(b"decoded pixels"))
+        stream[16:-4] = bytes(len(stream[16:-4]))
+        with self.assertRaises(NotStandardEzipStreamError):
+            decompress_standard_ezip(stream)
 
 
 if __name__ == "__main__":

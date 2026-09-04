@@ -1,5 +1,9 @@
 """Core helpers for decoding SiFli eZIP image data."""
 
+from dataclasses import dataclass
+import struct
+import zlib
+
 from PIL import Image
 
 
@@ -14,6 +18,90 @@ ARGB8888_LE = "ARGB8888_LE"
 
 class EzipDecodingError(ValueError):
     """Raised when decoded eZIP pixels have an unsupported layout."""
+
+
+class NotStandardEzipStreamError(EzipDecodingError):
+    """Raised when a stream is not the standard raw-DEFLATE variant."""
+
+
+@dataclass(frozen=True)
+class EzipStreamHeader:
+    data_size: int
+    control: int
+    bit_depth: int
+    block_rows: int
+    flags: int
+    width: int
+    height: int
+    filter_mode: int
+
+    @property
+    def has_filters(self):
+        return self.filter_mode != 1
+
+
+def parse_ezip_stream_header(data):
+    """Parse the 16-byte header following the SiFli resource header."""
+    if len(data) < 16:
+        raise EzipDecodingError("Input is shorter than an eZIP stream header")
+    data_size = struct.unpack_from(">I", data)[0]
+    width, height = struct.unpack_from(">HH", data, 8)
+    if data_size < 20 or data_size > len(data):
+        raise EzipDecodingError(
+            "eZIP stream size {} is invalid for {} input bytes".format(
+                data_size, len(data)
+            )
+        )
+    if width <= 0 or height <= 0:
+        raise EzipDecodingError("eZIP stream dimensions must be positive")
+    if data[6] <= 0:
+        raise EzipDecodingError("eZIP block row count must be positive")
+    return EzipStreamHeader(
+        data_size=data_size,
+        control=data[4],
+        bit_depth=data[5],
+        block_rows=data[6],
+        flags=data[7],
+        width=width,
+        height=height,
+        filter_mode=data[12] & 0x0F,
+    )
+
+
+def decompress_standard_ezip(data):
+    """Decode a standard SiFli raw-DEFLATE stream and verify its Adler-32."""
+    try:
+        header = parse_ezip_stream_header(data)
+    except EzipDecodingError as error:
+        raise NotStandardEzipStreamError(str(error)) from error
+    compressed = data[16 : header.data_size - 4]
+    expected_checksum = struct.unpack_from(">I", data, header.data_size - 4)[0]
+    try:
+        output = zlib.decompress(compressed, -15)
+    except zlib.error as error:
+        raise NotStandardEzipStreamError(
+            "Invalid raw-DEFLATE eZIP stream: {}".format(error)
+        ) from error
+
+    actual_checksum = zlib.adler32(output) & 0xFFFFFFFF
+    if actual_checksum != expected_checksum:
+        raise EzipDecodingError(
+            "eZIP checksum mismatch: expected {:08x}, decoded {:08x}".format(
+                expected_checksum, actual_checksum
+            )
+        )
+    return header, bytearray(output)
+
+
+def validate_stream_bit_depth(header, bytes_per_pixel):
+    """Cross-check decoded pixel size against the standard stream header."""
+    expected_bit_depth = bytes_per_pixel * 8
+    if header.bit_depth != expected_bit_depth:
+        raise EzipDecodingError(
+            "eZIP bit depth {} does not match {} decoded bytes/pixel".format(
+                header.bit_depth, bytes_per_pixel
+            )
+        )
 
 
 def infer_bytes_per_pixel(data_size, width, height, has_filters, strict=True):
