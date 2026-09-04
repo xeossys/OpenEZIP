@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel,
                              QVBoxLayout, QHBoxLayout, QWidget, QFileDialog, QTextEdit, QFrame, QComboBox, QGroupBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from PIL import Image
+from ezip_decoder import automatic_pixel_layout, pixels_to_image
 from sifli_header import parse_sifli_header
 
 # STANDARD DEFLATE CONSTANTS
@@ -251,26 +251,18 @@ class DecoderThread(QThread):
             
             raw_pixels = unfilter_png_blocks(lz77_filtered, width, height, bpp, row_size, has_filters)
 
-            # COLOR SPACE DEBUGGER LOGIC 
-            img = None
+            # COLOR SPACE DEBUGGER LOGIC
             if self.color_override == "Auto (Default)":
-                if bpp == 2: decode_format = "BGR;16"
-                elif bpp == 3: decode_format = "RGB"
-                else: decode_format = "RGBA"
+                decode_format = automatic_pixel_layout(color_format, bpp)
             else:
-                decode_format = self.color_override.split(": ")[-1] # Extracts "RGB;16", "BGR", etc.
+                decode_format = self.color_override.split(": ")[-1]
 
-            self.log_signal.emit(f"Rendering frame using PIL format: [{decode_format}]")
+            self.log_signal.emit(f"Rendering frame using pixel layout: [{decode_format}]")
 
             try:
-                if bpp == 2 or "16" in decode_format:
-                    img = Image.frombytes("RGB", (width, height), bytes(raw_pixels), "raw", decode_format)
-                elif bpp == 3 or decode_format in ["RGB", "BGR"]:
-                    img = Image.frombytes("RGB", (width, height), bytes(raw_pixels), "raw", decode_format)
-                else:
-                    img = Image.frombytes("RGBA", (width, height), bytes(raw_pixels), "raw", decode_format)
-            except ValueError as ve:
-                self.error_signal.emit(f"Color Mode Mismatch: File has {bpp} BPP, but you forced {decode_format}.")
+                img = pixels_to_image(raw_pixels, width, height, decode_format)
+            except ValueError as error:
+                self.error_signal.emit(f"Color decoding failed: {error}")
                 return
 
             output_path = os.path.splitext(self.bin_filepath)[0] + ".png"
@@ -330,9 +322,9 @@ class BinToPngApp(QMainWindow):
         self.color_mode_combo = QComboBox()
         self.color_mode_combo.addItems([
             "Auto (Default)",
+            "24-bit: RGB565A_LE",
             "16-bit: BGR;16",
             "16-bit: RGB;16",
-            "16-bit: BGR;16B (Big Endian)",
             "24-bit: RGB",
             "24-bit: BGR",
             "32-bit: RGBA",
