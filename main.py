@@ -6,7 +6,12 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel,
                              QVBoxLayout, QHBoxLayout, QWidget, QFileDialog, QTextEdit, QFrame, QComboBox, QGroupBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from ezip_decoder import automatic_pixel_layout, pixels_to_image
+from ezip_decoder import (
+    automatic_pixel_layout,
+    infer_bytes_per_pixel,
+    pixels_to_image,
+    unfilter_png_blocks,
+)
 from sifli_header import parse_sifli_header
 
 # STANDARD DEFLATE CONSTANTS
@@ -141,50 +146,6 @@ def decode_sifli_ezip(data, row_size):
 
     return out_data
 
-def unfilter_png_blocks(data, width, height, bpp, block_row_size, has_filters):
-    out = bytearray(width * height * bpp)
-    stride = width * bpp
-    
-    if not has_filters:
-        return bytearray(data[:len(out)])
-
-    row_len = stride + 1
-
-    def paeth(a, b, c):
-        p = a + b - c
-        pa = abs(p - a)
-        pb = abs(p - b)
-        pc = abs(p - c)
-        if pa <= pb and pa <= pc: return a
-        if pb <= pc: return b
-        return c
-
-    for y in range(height):
-        in_row_start = y * row_len
-        if in_row_start >= len(data): break
-        filter_type = data[in_row_start]
-        in_row = data[in_row_start + 1 : in_row_start + 1 + stride]
-        
-        is_first_row_in_block = (y % block_row_size == 0)
-
-        for x in range(stride):
-            if x >= len(in_row): break
-            raw = in_row[x]
-            left = out[y * stride + x - bpp] if x >= bpp else 0
-            up = 0 if is_first_row_in_block else out[(y - 1) * stride + x]
-            up_left = 0 if (is_first_row_in_block or x < bpp) else out[(y - 1) * stride + x - bpp]
-
-            if filter_type == 0: val = raw
-            elif filter_type == 1: val = (raw + left) & 0xFF
-            elif filter_type == 2: val = (raw + up) & 0xFF
-            elif filter_type == 3: val = (raw + (left + up) // 2) & 0xFF
-            elif filter_type == 4: val = (raw + paeth(left, up, up_left)) & 0xFF
-            else: val = raw
-
-            out[y * stride + x] = val
-
-    return out
-
 # DECODER THREAD 
 class DecoderThread(QThread):
     log_signal = pyqtSignal(str)
@@ -246,7 +207,9 @@ class DecoderThread(QThread):
                     end = offsets[i+1] - 16 - table_size
                     lz77_filtered.extend(zlib.decompress(raw_stream[start:end], -15))
 
-            bpp = (len(lz77_filtered) - height) // (width * height) if has_filters else len(lz77_filtered) // (width * height)
+            bpp = infer_bytes_per_pixel(
+                len(lz77_filtered), width, height, has_filters
+            )
             meta['bpp'] = bpp
             
             raw_pixels = unfilter_png_blocks(lz77_filtered, width, height, bpp, row_size, has_filters)

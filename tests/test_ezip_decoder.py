@@ -9,7 +9,9 @@ from ezip_decoder import (
     RGB888_LE,
     EzipDecodingError,
     automatic_pixel_layout,
+    infer_bytes_per_pixel,
     pixels_to_image,
+    unfilter_png_blocks,
 )
 
 
@@ -70,6 +72,53 @@ class EzipPixelDecoderTest(unittest.TestCase):
     def test_rejects_wrong_pixel_data_length(self):
         with self.assertRaises(EzipDecodingError):
             pixels_to_image(b"\x00\x00", 2, 1, RGB565_LE)
+
+
+class EzipFilterDecoderTest(unittest.TestCase):
+    def test_infers_pixel_size_with_and_without_filters(self):
+        self.assertEqual(3, infer_bytes_per_pixel(24, 4, 2, False))
+        self.assertEqual(3, infer_bytes_per_pixel(26, 4, 2, True))
+
+    def test_rejects_non_integral_pixel_size(self):
+        with self.assertRaises(EzipDecodingError):
+            infer_bytes_per_pixel(25, 4, 2, True)
+
+    def test_legacy_pixel_size_preserves_floor_division(self):
+        self.assertEqual(3, infer_bytes_per_pixel(27, 4, 2, True, strict=False))
+
+    def test_unfilters_sub_scanline(self):
+        decoded = unfilter_png_blocks(
+            bytes([1, 10, 10, 10]), 3, 1, 1, 1, True
+        )
+        self.assertEqual(bytes([10, 20, 30]), decoded)
+
+    def test_unfilters_up_scanline(self):
+        decoded = unfilter_png_blocks(
+            bytes([0, 10, 20, 2, 1, 2]), 2, 2, 1, 2, True
+        )
+        self.assertEqual(bytes([10, 20, 11, 22]), decoded)
+
+    def test_resets_previous_row_at_block_boundary(self):
+        decoded = unfilter_png_blocks(
+            bytes([0, 10, 20, 2, 1, 2]), 2, 2, 1, 1, True
+        )
+        self.assertEqual(bytes([10, 20, 1, 2]), decoded)
+
+    def test_rejects_unknown_filter(self):
+        with self.assertRaises(EzipDecodingError):
+            unfilter_png_blocks(bytes([5, 10]), 1, 1, 1, 1, True)
+
+    def test_legacy_unfilter_tolerates_partial_rows_and_unknown_filters(self):
+        decoded = unfilter_png_blocks(
+            bytes([5, 10]), 2, 2, 1, 2, True, strict=False
+        )
+        self.assertEqual(bytes([10, 0, 0, 0]), decoded)
+
+    def test_legacy_unfiltered_data_is_truncated_to_image_size(self):
+        decoded = unfilter_png_blocks(
+            bytes([1, 2, 3]), 2, 1, 1, 1, False, strict=False
+        )
+        self.assertEqual(bytes([1, 2]), decoded)
 
 
 if __name__ == "__main__":

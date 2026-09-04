@@ -16,6 +16,103 @@ class EzipDecodingError(ValueError):
     """Raised when decoded eZIP pixels have an unsupported layout."""
 
 
+def infer_bytes_per_pixel(data_size, width, height, has_filters, strict=True):
+    """Infer pixel size while validating the decompressed scanline length."""
+    if width <= 0 or height <= 0:
+        raise EzipDecodingError("Image dimensions must be positive")
+
+    filter_bytes = height if has_filters else 0
+    pixel_bytes = data_size - filter_bytes
+    pixel_count = width * height
+    if not strict:
+        return pixel_bytes // pixel_count
+    if pixel_bytes <= 0 or pixel_bytes % pixel_count:
+        raise EzipDecodingError(
+            "Decompressed data size {} is invalid for a {}x{} image{}".format(
+                data_size,
+                width,
+                height,
+                " with row filters" if has_filters else "",
+            )
+        )
+    return pixel_bytes // pixel_count
+
+
+def unfilter_png_blocks(
+    data,
+    width,
+    height,
+    bytes_per_pixel,
+    block_row_size,
+    has_filters,
+    strict=True,
+):
+    """Reverse PNG scanline filters, resetting the previous row per eZIP block."""
+    stride = width * bytes_per_pixel
+    expected_size = height * (stride + (1 if has_filters else 0))
+    if strict and len(data) != expected_size:
+        raise EzipDecodingError(
+            "Decompressed data has {} bytes; expected {}".format(
+                len(data), expected_size
+            )
+        )
+    if not has_filters:
+        return bytearray(data if strict else data[:expected_size])
+    if strict and block_row_size <= 0:
+        raise EzipDecodingError("Filtered data requires a positive block row size")
+
+    out = bytearray(width * height * bytes_per_pixel)
+    row_len = stride + 1
+
+    def paeth(a, b, c):
+        prediction = a + b - c
+        distance_a = abs(prediction - a)
+        distance_b = abs(prediction - b)
+        distance_c = abs(prediction - c)
+        if distance_a <= distance_b and distance_a <= distance_c:
+            return a
+        if distance_b <= distance_c:
+            return b
+        return c
+
+    for y in range(height):
+        in_row_start = y * row_len
+        if not strict and in_row_start >= len(data):
+            break
+        filter_type = data[in_row_start]
+        if strict and filter_type > 4:
+            raise EzipDecodingError(
+                "Unsupported PNG filter type {} on row {}".format(filter_type, y)
+            )
+        in_row = data[in_row_start + 1 : in_row_start + 1 + stride]
+        first_row_in_block = y % block_row_size == 0
+
+        for x, raw in enumerate(in_row):
+            left = out[y * stride + x - bytes_per_pixel] if x >= bytes_per_pixel else 0
+            up = 0 if first_row_in_block else out[(y - 1) * stride + x]
+            up_left = (
+                0
+                if first_row_in_block or x < bytes_per_pixel
+                else out[(y - 1) * stride + x - bytes_per_pixel]
+            )
+
+            if filter_type == 0:
+                value = raw
+            elif filter_type == 1:
+                value = raw + left
+            elif filter_type == 2:
+                value = raw + up
+            elif filter_type == 3:
+                value = raw + (left + up) // 2
+            elif filter_type == 4:
+                value = raw + paeth(left, up, up_left)
+            else:
+                value = raw
+            out[y * stride + x] = value & 0xFF
+
+    return out
+
+
 def automatic_pixel_layout(resource_format, bytes_per_pixel):
     """Return the SiFli pixel layout implied by the resource header and size."""
     layouts = {
