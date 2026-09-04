@@ -23,6 +23,11 @@ class EzipEncoderTest(unittest.TestCase):
         self.assertEqual(485, header.width)
         self.assertEqual(520, header.height)
 
+    def test_ignores_reserved_header_bits(self):
+        value = 2 | (0b10101 << 5) | (12 << 10) | (34 << 21)
+        header = parse_sifli_header(struct.pack("<I", value))
+        self.assertEqual(2, header.color_format)
+
     def test_builds_official_rgb565a_command(self):
         command = build_encoder_command(
             encoder=Path("/tool/eZIP.exe"),

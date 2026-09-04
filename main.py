@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel,
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PIL import Image
+from sifli_header import parse_sifli_header
 
 # STANDARD DEFLATE CONSTANTS
 LENGTHBASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
@@ -201,10 +202,10 @@ class DecoderThread(QThread):
             with open(self.bin_filepath, 'rb') as f:
                 data = f.read()
 
-            header_val = struct.unpack("<I", data[:4])[0]
-            color_format = header_val & 0x1F
-            width = (header_val >> 10) & 0x7FF
-            height = (header_val >> 21) & 0x7FF
+            resource_header = parse_sifli_header(data)
+            color_format = resource_header.color_format
+            width = resource_header.width
+            height = resource_header.height
 
             comp_data = data[20:]
             row_size = struct.unpack(">H", comp_data[0:2])[0]

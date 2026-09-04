@@ -6,39 +6,32 @@ module at a copy obtained from SiFli's GraphicsTool installation instead.
 """
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 import shutil
-import struct
 import subprocess
 import tempfile
 from typing import Optional, Sequence, Tuple
+
+from sifli_header import (
+    SifliHeaderError,
+    SifliResourceHeader,
+    parse_sifli_header as _parse_sifli_header,
+)
 
 
 class EzipEncodingError(RuntimeError):
     """Raised when the official encoder cannot produce a valid eZIP file."""
 
 
-@dataclass(frozen=True)
-class SifliResourceHeader:
-    color_format: int
-    width: int
-    height: int
-
-
 SUPPORTED_FORMATS = ("rgb565a", "rgb565", "rgb888")
 
 
 def parse_sifli_header(data: bytes) -> SifliResourceHeader:
-    """Parse the four-byte SiFli resource header shared by eZIP assets."""
-    if len(data) < 4:
-        raise EzipEncodingError("Output is shorter than a SiFli resource header")
-    value = struct.unpack_from("<I", data)[0]
-    return SifliResourceHeader(
-        color_format=value & 0x3FF,
-        width=(value >> 10) & 0x7FF,
-        height=(value >> 21) & 0x7FF,
-    )
+    """Parse a resource header, preserving the encoder bridge error API."""
+    try:
+        return _parse_sifli_header(data)
+    except SifliHeaderError as error:
+        raise EzipEncodingError(str(error)) from error
 
 
 def build_encoder_command(
