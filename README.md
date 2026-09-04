@@ -5,28 +5,52 @@ An open-source research initiative and Python GUI tool aimed at reverse-engineer
 
 **Target Hardware:** This tool was initiated for the **HK8 Pro Max** smartwatch, but it is designed to work with the same lineup of smartwatches utilizing **SiFli chipsets**.
 
-**⚠️ PROJECT STATUS: ALPHA / WORK-IN-PROGRESS** Currently, this tool can successfully parse EZIP block structures and decompress the hidden PNG data, but **the color rendering is off (images appear reddish/purplish)**. 
+**⚠️ PROJECT STATUS: ALPHA / WORK-IN-PROGRESS** The decoder supports the current
+SiFli raw-DEFLATE stream layout and the documented little-endian RGB565,
+RGB888, RGB565 with alpha, and ARGB8888 pixel layouts. Legacy shared-Huffman
+streams still need broader fixture coverage.
 
-This repository is being released to the community so developers can collaborate, fix the color decoding matrix, and ultimately achieve our main goal: **compiling modified `.bin` files that the watch hardware will accept.**
+This repository is being released to the community so developers can broaden
+format support and ultimately achieve our main goal: **compiling modified
+`.bin` files that the watch hardware will accept.**
 
 ## 🎯 The End Goal / Roadmap
 
-1. **[WIP] Perfect the Decoder:** Fix the RGB/BGR byte-swapping and RGB565 rendering issues so extracted `.png` files have 100% accurate colors.
+1. **[WIP] Perfect the Decoder:** Add fixture coverage for more firmware and legacy shared-Huffman stream variants.
 2. **[WIP] Re-Encoder/Compiler:** `ezip_encoder.py` now provides a verified bridge to a user-supplied official SiFli encoder. A fully open reimplementation of SiFli compression remains TODO.
 3. **[TODO] Hardware Flashing:** Successfully flash modded UI elements and custom watch faces back onto the smartwatch.
 
 ## 🐛 Known Issues (Help Wanted!)
 
-* **Color Channel Misalignment:** Decompressed images currently output with a reddish/purple tint. This is likely due to the hardware using a specific `BGR;16` or `RGB565` byte layout that our current PIL implementation isn't perfectly aligning with after the LZ77 decompression.
-* **Filter Types:** PNG filter un-filtering works for standard blocks, but some hardware-specific filter flags might still be misread.
+* **Legacy Streams:** The shared-Huffman decoder is retained for older assets but
+  does not yet have an authoritative public fixture. Current raw-DEFLATE eZIP
+  streams are checksum-validated and tested against SiFli's published output.
+* **Firmware Variants:** Assets from additional watches may use header or stream
+  variants that are not represented by the available fixtures yet.
 
 ## ✨ Current Working Features
 
 * **GUI Live Preview:** Fast, responsive UI built in PyQt6 for loading `.bin` files.
 * **Header Parsing:** Successfully reads the custom SiFli LVGL (4-byte) and EZIP (16-byte) headers.
 * **Block Extraction:** Maps the block offset table and dynamically extracts chunked streams.
-* **Deflate/Huffman Decoding:** Handles both "Modded Stream" (standard zlib deflate) and "Factory Stream" (Custom Shared Huffman Tree) extraction.
+* **Stream Decoding:** Handles current raw-DEFLATE streams with Adler-32
+  verification and retains legacy block-DEFLATE/shared-Huffman fallbacks.
 * **Color Space Debugger:** Dropdown selection tool to force-override the byte decoding pattern during analysis.
+
+## Decoder pixel formats
+
+The resource header distinguishes eZIP data with and without alpha. Combined
+with the decoded bit depth, the automatic decoder selects these layouts:
+
+| Resource format | Bytes per pixel | SiFli byte layout | PNG output |
+|---|---:|---|---|
+| eZIP | 2 | little-endian RGB565 | RGB |
+| eZIP | 3 | B, G, R | RGB |
+| eZIP with alpha | 3 | RGB565 low byte, high byte, alpha | RGBA |
+| eZIP with alpha | 4 | B, G, R, A | RGBA |
+
+The format definitions follow SiFli's
+[EZIP Image Conversion Tool documentation](https://github.com/OpenSiFli/SiFli-SDK/blob/main/docs/source/en/app_note/ezip_tool_usage.md).
 
 ## ✅ Official encoder bridge (verified)
 
@@ -62,7 +86,7 @@ the matching stock package structure, resource paths and native watchface
 module for the target firmware. Do not assume a valid `.bin` is portable
 between HK8 revisions or SiFli watches.
 
-Run the bridge tests with:
+Run the encoder and decoder tests with:
 
 ```bash
 python -m unittest discover -s tests -v
