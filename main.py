@@ -6,7 +6,17 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel,
                              QVBoxLayout, QHBoxLayout, QWidget, QFileDialog, QTextEdit, QFrame, QComboBox, QGroupBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from PIL import Image
+from ezip_decoder import (
+    automatic_pixel_layout,
+    decompress_standard_ezip,
+    EzipDecodingError,
+    infer_bytes_per_pixel,
+    NotStandardEzipStreamError,
+    pixels_to_image,
+    unfilter_png_blocks,
+    validate_stream_bit_depth,
+)
+from sifli_header import parse_sifli_header
 
 # STANDARD DEFLATE CONSTANTS
 LENGTHBASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
@@ -140,50 +150,6 @@ def decode_sifli_ezip(data, row_size):
 
     return out_data
 
-def unfilter_png_blocks(data, width, height, bpp, block_row_size, has_filters):
-    out = bytearray(width * height * bpp)
-    stride = width * bpp
-    
-    if not has_filters:
-        return bytearray(data[:len(out)])
-
-    row_len = stride + 1
-
-    def paeth(a, b, c):
-        p = a + b - c
-        pa = abs(p - a)
-        pb = abs(p - b)
-        pc = abs(p - c)
-        if pa <= pb and pa <= pc: return a
-        if pb <= pc: return b
-        return c
-
-    for y in range(height):
-        in_row_start = y * row_len
-        if in_row_start >= len(data): break
-        filter_type = data[in_row_start]
-        in_row = data[in_row_start + 1 : in_row_start + 1 + stride]
-        
-        is_first_row_in_block = (y % block_row_size == 0)
-
-        for x in range(stride):
-            if x >= len(in_row): break
-            raw = in_row[x]
-            left = out[y * stride + x - bpp] if x >= bpp else 0
-            up = 0 if is_first_row_in_block else out[(y - 1) * stride + x]
-            up_left = 0 if (is_first_row_in_block or x < bpp) else out[(y - 1) * stride + x - bpp]
-
-            if filter_type == 0: val = raw
-            elif filter_type == 1: val = (raw + left) & 0xFF
-            elif filter_type == 2: val = (raw + up) & 0xFF
-            elif filter_type == 3: val = (raw + (left + up) // 2) & 0xFF
-            elif filter_type == 4: val = (raw + paeth(left, up, up_left)) & 0xFF
-            else: val = raw
-
-            out[y * stride + x] = val
-
-    return out
-
 # DECODER THREAD 
 class DecoderThread(QThread):
     log_signal = pyqtSignal(str)
@@ -201,19 +167,65 @@ class DecoderThread(QThread):
             with open(self.bin_filepath, 'rb') as f:
                 data = f.read()
 
-            header_val = struct.unpack("<I", data[:4])[0]
-            color_format = header_val & 0x1F
-            width = (header_val >> 10) & 0x7FF
-            height = (header_val >> 21) & 0x7FF
+            resource_header = parse_sifli_header(data)
+            color_format = resource_header.color_format
+            width = resource_header.width
+            height = resource_header.height
 
-            comp_data = data[20:]
-            row_size = struct.unpack(">H", comp_data[0:2])[0]
-            num_blocks = struct.unpack(">H", comp_data[2:4])[0]
-            
-            ctrl = data[8]
-            filterless_flag = data[4 + 12] & 0x0F
-            has_filters = (filterless_flag != 1)
-            one_huffcode = ((ctrl >> 4) > 2) and ((ctrl >> 4) != 5)
+            stream_data = data[4:]
+            try:
+                stream_header, lz77_filtered = decompress_standard_ezip(stream_data)
+                if (stream_header.width, stream_header.height) != (width, height):
+                    raise EzipDecodingError(
+                        "Resource dimensions do not match the eZIP stream header"
+                    )
+
+                ctrl = stream_header.control
+                row_size = stream_header.block_rows
+                has_filters = stream_header.has_filters
+                num_blocks = (height + row_size - 1) // row_size
+                one_huffcode = False
+                stream_kind = "Standard raw-DEFLATE"
+                strict_stream = True
+            except NotStandardEzipStreamError as standard_error:
+                self.log_signal.emit(
+                    f"Standard stream unavailable ({standard_error}); trying legacy layout..."
+                )
+                ctrl = data[8]
+                filterless_flag = data[16] & 0x0F
+                has_filters = filterless_flag != 1
+                comp_data = data[20:]
+                legacy_row_size = struct.unpack(">H", comp_data[0:2])[0]
+                row_size = legacy_row_size
+                num_blocks = struct.unpack(">H", comp_data[2:4])[0]
+                one_huffcode = ((ctrl >> 4) > 2) and ((ctrl >> 4) != 5)
+
+                table_size = 4 * (num_blocks + 1)
+                raw_stream = comp_data[table_size:]
+
+                if one_huffcode:
+                    stream_kind = "Legacy shared Huffman"
+                    lz77_filtered = decode_sifli_ezip(raw_stream, legacy_row_size)
+                else:
+                    stream_kind = "Legacy block-DEFLATE"
+                    offsets = []
+                    for i in range(num_blocks):
+                        off = struct.unpack(
+                            ">I", comp_data[4 + i*4 : 8 + i*4]
+                        )[0]
+                        if i == 0:
+                            off &= 0x00FFFFFF
+                        offsets.append(off)
+                    offsets.append(len(raw_stream) + table_size + 16)
+
+                    lz77_filtered = bytearray()
+                    for i in range(num_blocks):
+                        start = offsets[i] - 16 - table_size
+                        end = offsets[i+1] - 16 - table_size
+                        lz77_filtered.extend(
+                            zlib.decompress(raw_stream[start:end], -15)
+                        )
+                strict_stream = False
 
             meta = {
                 'w': width, 'h': height, 'row_size': row_size, 
@@ -222,54 +234,43 @@ class DecoderThread(QThread):
                 'color_format': color_format, 'file_size': len(data)
             }
 
-            self.log_signal.emit(f"[EZIP] Block Rows: {row_size}, Blocks: {num_blocks}")
-            
-            table_size = 4 * (num_blocks + 1)
-            raw_stream = comp_data[table_size:]
+            self.log_signal.emit(
+                f"[EZIP] Stream: {stream_kind}, Block Rows: {row_size}, Blocks: {num_blocks}"
+            )
 
-            if one_huffcode:
-                self.log_signal.emit("Decompressing Factory Stream (Shared Huffman)...")
-                lz77_filtered = decode_sifli_ezip(raw_stream, row_size)
-            else:
-                self.log_signal.emit("Decompressing Modded Stream (Standard Blocks)...")
-                offsets = []
-                for i in range(num_blocks):
-                    off = struct.unpack(">I", comp_data[4 + i*4 : 8 + i*4])[0]
-                    if i == 0: off &= 0x00FFFFFF
-                    offsets.append(off)
-                offsets.append(len(raw_stream) + table_size + 16)
-                
-                lz77_filtered = bytearray()
-                for i in range(num_blocks):
-                    start = offsets[i] - 16 - table_size
-                    end = offsets[i+1] - 16 - table_size
-                    lz77_filtered.extend(zlib.decompress(raw_stream[start:end], -15))
-
-            bpp = (len(lz77_filtered) - height) // (width * height) if has_filters else len(lz77_filtered) // (width * height)
+            bpp = infer_bytes_per_pixel(
+                len(lz77_filtered),
+                width,
+                height,
+                has_filters,
+                strict=strict_stream,
+            )
+            if strict_stream:
+                validate_stream_bit_depth(stream_header, bpp)
             meta['bpp'] = bpp
             
-            raw_pixels = unfilter_png_blocks(lz77_filtered, width, height, bpp, row_size, has_filters)
+            raw_pixels = unfilter_png_blocks(
+                lz77_filtered,
+                width,
+                height,
+                bpp,
+                row_size,
+                has_filters,
+                strict=strict_stream,
+            )
 
-            # COLOR SPACE DEBUGGER LOGIC 
-            img = None
+            # COLOR SPACE DEBUGGER LOGIC
             if self.color_override == "Auto (Default)":
-                if bpp == 2: decode_format = "BGR;16"
-                elif bpp == 3: decode_format = "RGB"
-                else: decode_format = "RGBA"
+                decode_format = automatic_pixel_layout(color_format, bpp)
             else:
-                decode_format = self.color_override.split(": ")[-1] # Extracts "RGB;16", "BGR", etc.
+                decode_format = self.color_override.split(": ")[-1]
 
-            self.log_signal.emit(f"Rendering frame using PIL format: [{decode_format}]")
+            self.log_signal.emit(f"Rendering frame using pixel layout: [{decode_format}]")
 
             try:
-                if bpp == 2 or "16" in decode_format:
-                    img = Image.frombytes("RGB", (width, height), bytes(raw_pixels), "raw", decode_format)
-                elif bpp == 3 or decode_format in ["RGB", "BGR"]:
-                    img = Image.frombytes("RGB", (width, height), bytes(raw_pixels), "raw", decode_format)
-                else:
-                    img = Image.frombytes("RGBA", (width, height), bytes(raw_pixels), "raw", decode_format)
-            except ValueError as ve:
-                self.error_signal.emit(f"Color Mode Mismatch: File has {bpp} BPP, but you forced {decode_format}.")
+                img = pixels_to_image(raw_pixels, width, height, decode_format)
+            except ValueError as error:
+                self.error_signal.emit(f"Color decoding failed: {error}")
                 return
 
             output_path = os.path.splitext(self.bin_filepath)[0] + ".png"
@@ -329,9 +330,9 @@ class BinToPngApp(QMainWindow):
         self.color_mode_combo = QComboBox()
         self.color_mode_combo.addItems([
             "Auto (Default)",
+            "24-bit: RGB565A_LE",
             "16-bit: BGR;16",
             "16-bit: RGB;16",
-            "16-bit: BGR;16B (Big Endian)",
             "24-bit: RGB",
             "24-bit: BGR",
             "32-bit: RGBA",
